@@ -1,0 +1,13 @@
+# PathOptLearn MVP (DeepTutor-like)
+numpy>=1.21
+pandas>=1.3
+scikit-learn>=1.0
+gradio>=4.0
+fastapi>=0.100
+uvicorn[standard]>=0.22
+pydantic>=2.0
+requests>=2.28
+
+# Optional for future LLM/transformer phase
+# torch>=1.10
+# transformers>=4.20

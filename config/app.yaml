@@ -1,0 +1,22 @@
+# PathOptLearn app config (DeepTutor-like layout)
+# Override via environment: BACKEND_PORT, FRONTEND_PORT
+
+app:
+  name: PathOptLearn
+  description: AI Learning Path Generation — Optimal Learning Pathways
+
+backend:
+  port: 8001
+  host: "0.0.0.0"
+
+frontend:
+  port: 7860   # Gradio
+  # Optional: Next.js frontend port (future)
+  # next_port: 3782
+
+data:
+  n_students: 200
+  n_items: 100
+  n_skills: 10
+  n_interactions_per_student: 40
+  seed: 42
