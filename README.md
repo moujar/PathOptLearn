@@ -22,10 +22,19 @@ The models' training notebooks are:
 ## The Main Interface
 The 'youtube_transcript_app_3.py' file is the streamlit app that accesses the two models after scraping the transcript of a youtube video.
 
+## Recommender System
+The 'recommender_system.ipynb' notebook implements the video recommender. It uses YouTube search (via youtube-search-python) to find candidate videos, extracts captions with yt-dlp, and uses Google Gemini to rank and pick the best next video based on student context (topic, level, weak areas, watched history). Exposes a FastAPI `/recommend` endpoint.
+
+## Progress Tracking
+The 'progress_tracking.ipynb' notebook implements SQLite-based student progress tracking. It stores per-student data: video watched, quiz scores, pass/fail status, evaluation text, timestamps, and the full learning path. Includes matplotlib dashboard visualizations and FastAPI CRUD endpoints.
+
+## Full Integration
+The 'full_integration.ipynb' notebook combines all components into a single Colab API server: question generation, evaluation, recommender, and progress tracking. It also contains an updated Streamlit app with video recommendation (Step 4) and a sidebar progress dashboard.
+
 # TO DO
-1. Recommender system (picks the next video based on evaluation result)
-2. Progress tracking dashboard
-3. Full system integration
+1. ~~Recommender system (picks the next video based on evaluation result)~~ ✅
+2. ~~Progress tracking dashboard~~ ✅
+3. ~~Full system integration~~ ✅
 
 ___
 
