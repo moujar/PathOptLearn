@@ -1,0 +1,29 @@
+# ── Backend ────────────────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+
+# ── Database ────────────────────────────────────────────────────────────────
+sqlalchemy[asyncio]>=2.0.36
+asyncpg>=0.30.0          # async PostgreSQL driver
+psycopg[binary]>=3.2.0   # sync driver for LangGraph checkpointer
+alembic>=1.14.0
+pgvector>=0.3.6          # pgvector SQLAlchemy integration
+
+# ── LangGraph + LangChain ───────────────────────────────────────────────────
+langgraph>=0.3.0
+langchain>=0.3.0
+langchain-ollama>=0.2.0
+langgraph-checkpoint-postgres>=2.0.0
+
+# ── Local LLM — Ollama (chat + embeddings, no API key) ──────────────────────
+ollama>=0.4.0
+
+# ── Frontend ─────────────────────────────────────────────────────────────────
+streamlit>=1.41.0
+httpx>=0.28.0
+plotly>=5.24.0
+
+# ── Observability (optional) ─────────────────────────────────────────────────
+langsmith>=0.2.0
