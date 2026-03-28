@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+streamlit
+ollama
+ddgs
+requests
+beautifulsoup4
+lxml
+yt-dlp
+psycopg2-binary
+pydantic
+python-multipart
