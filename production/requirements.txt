@@ -1,0 +1,16 @@
+streamlit>=1.35.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+ddgs>=6.0.0
+yt-dlp>=2024.1.0
+bcrypt>=4.1.0
+python-dotenv>=1.0.0
+sib-api-v3-sdk>=7.6.0
+
+# LLM providers (install at least one)
+# For Groq (default): no extra package needed — uses requests
+# For Ollama (local): uncomment below
+# ollama>=0.2.0
+
+# Optional: Whisper fallback transcription
+# openai-whisper>=20231117

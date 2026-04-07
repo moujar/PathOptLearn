@@ -1,0 +1,118 @@
+services:
+
+  # ── FastAPI backend ───────────────────────────────────────────────────────
+  api:
+    build: ./app
+    container_name: pathoptlearn_api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST:     postgres
+      POSTGRES_PORT:     5432
+      POSTGRES_DB:       pathoptlearn
+      POSTGRES_USER:     pathoptlearn
+      POSTGRES_PASSWORD: pathoptlearn
+      NEO4J_URI:         bolt://neo4j:7687
+      NEO4J_USER:        neo4j
+      NEO4J_PASS:        pathoptlearn
+      OLLAMA_HOST:       http://ollama:11434
+      OLLAMA_MODEL:      llama3.2:1b
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: pathoptlearn_postgres
+    environment:
+      POSTGRES_DB:       pathoptlearn
+      POSTGRES_USER:     pathoptlearn
+      POSTGRES_PASSWORD: pathoptlearn
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pathoptlearn -d pathoptlearn"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Neo4j knowledge graph ─────────────────────────────────────────────────
+  neo4j:
+    image: neo4j:5-community
+    container_name: pathoptlearn_neo4j
+    environment:
+      NEO4J_AUTH:                      neo4j/pathoptlearn
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size:     512m
+    ports:
+      - "7474:7474"   # Neo4j Browser UI → http://localhost:7474
+      - "7687:7687"   # Bolt protocol
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+    restart: unless-stopped
+
+  # ── Ollama (local LLM) ────────────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama
+    container_name: pathoptlearn_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+  # ── Streamlit frontend ───────────────────────────────────────────────────
+  frontend:
+    build: ./app
+    container_name: pathoptlearn_frontend
+    ports:
+      - "8501:8501"
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      - api
+    command: >
+      streamlit run frontend.py
+      --server.port 8501
+      --server.address 0.0.0.0
+      --server.headless true
+    restart: unless-stopped
+
+  # ── Pull the model once on first start ───────────────────────────────────
+  # Runs ollama pull, then exits. Re-runs are instant (model is cached).
+  ollama-init:
+    image: ollama/ollama
+    container_name: pathoptlearn_ollama_init
+    depends_on:
+      - ollama
+    entrypoint: >
+      sh -c "
+        sleep 5 &&
+        ollama pull llama3.2:1b
+      "
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    restart: "no"
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  neo4j_logs:
+  ollama_data:

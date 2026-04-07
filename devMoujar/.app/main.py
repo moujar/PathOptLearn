@@ -1,0 +1,21 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.routes import search, learnflow
+
+app = FastAPI(title="DeepSearch + LearnFlow API", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(search.router)
+app.include_router(learnflow.router)
+
+
+@app.get("/")
+def root():
+    return {"status": "ok", "docs": "/docs"}
