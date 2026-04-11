@@ -52,3 +52,9 @@ Models directories links to download:
 https://drive.google.com/drive/folders/15047-E2jRbeoHLkxsvlStT7cD20-UJwo?usp=sharing
 
 https://drive.google.com/drive/folders/1dF2Zq3i4ki-X4tmkOt4txfhd1Y9SWHjL?usp=sharing
+
+The new retrained evamuation model:
+https://drive.google.com/drive/folders/17n4FyedwaXFCTbrue6u-dMSQGGPh6h9w?usp=sharing
+
+___
+Important! Generate your keys and API tokens first before running anything!
