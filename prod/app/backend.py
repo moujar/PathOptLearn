@@ -1467,6 +1467,109 @@ def get_resources(
     }
 
 
+@app.get("/graph", summary="Export full knowledge graph for visualisation")
+def get_graph(
+    topic: Optional[str] = Query(None, description="Filter by topic name — omit for all topics"),
+    limit: int = Query(200, ge=1, le=1000, description="Max nodes to return"),
+):
+    """
+    Returns all nodes and relationships from Neo4j as a {nodes, edges} structure
+    suitable for graph visualisation libraries (e.g. pyvis, d3, streamlit-agraph).
+
+    Node types: Topic · LevelGroup · Module · Concept · Resource
+    Edge types: HAS_LEVEL · HAS_MODULE · TEACHES · HAS_RESOURCE · PREREQUISITE_FOR
+    """
+    try:
+        drv = get_neo4j_driver()
+        with drv.session() as s:
+            topic_filter = "WHERE t.name = $topic" if topic else ""
+            # Nodes
+            nodes_raw: dict = {}
+
+            # Topics
+            rows = s.run(f"MATCH (t:Topic) {topic_filter} RETURN t LIMIT $limit",
+                         topic=topic, limit=limit).data()
+            for r in rows:
+                n = dict(r["t"])
+                nid = f"topic_{n['name']}"
+                nodes_raw[nid] = {"id": nid, "label": n["name"], "type": "Topic",
+                                   "title": f"Topic: {n['name']}", **n}
+
+            # Modules
+            rows = s.run(
+                f"""MATCH (t:Topic)-[:HAS_MODULE]->(m:Module) {topic_filter.replace('WHERE t','WHERE t')}
+                    RETURN m LIMIT $limit""",
+                topic=topic, limit=limit).data()
+            for r in rows:
+                n = dict(r["m"])
+                nid = n.get("uid", n.get("title", ""))
+                nodes_raw[nid] = {"id": nid, "label": n.get("title",""),
+                                   "type": "Module",
+                                   "title": f"Module: {n.get('title','')} — {n.get('objective','')}",
+                                   **n}
+
+            # Concepts
+            rows = s.run(
+                f"""MATCH (t:Topic)-[:HAS_MODULE]->(m:Module)-[:TEACHES]->(c:Concept)
+                    {topic_filter} RETURN c LIMIT $limit""",
+                topic=topic, limit=limit).data()
+            for r in rows:
+                n = dict(r["c"])
+                nid = f"concept_{n['name']}"
+                nodes_raw[nid] = {"id": nid, "label": n["name"], "type": "Concept",
+                                   "title": f"Concept: {n['name']}", **n}
+
+            # Resources
+            rows = s.run(
+                f"""MATCH (t:Topic)-[:HAS_RESOURCE]->(res:Resource)
+                    {topic_filter} RETURN res LIMIT $limit""",
+                topic=topic, limit=limit).data()
+            for r in rows:
+                n = dict(r["res"])
+                nid = f"res_{n.get('url','')[:60]}"
+                nodes_raw[nid] = {"id": nid, "label": n.get("title","Resource")[:40],
+                                   "type": "Resource",
+                                   "title": n.get("title",""), **n}
+
+            # Edges
+            edges = []
+            rel_queries = [
+                ("MATCH (t:Topic)-[r:HAS_MODULE]->(m:Module) RETURN "
+                 " 't_'+t.name AS src, m.uid AS tgt, type(r) AS rel"),
+                ("MATCH (m:Module)-[r:TEACHES]->(c:Concept) RETURN "
+                 " m.uid AS src, 'concept_'+c.name AS tgt, type(r) AS rel"),
+                ("MATCH (t:Topic)-[r:HAS_RESOURCE]->(res:Resource) RETURN "
+                 " 't_'+t.name AS src, 'res_'+left(res.url,60) AS tgt, type(r) AS rel"),
+                ("MATCH (pre:Module)-[r:PREREQUISITE_FOR]->(m:Module) RETURN "
+                 " pre.uid AS src, m.uid AS tgt, type(r) AS rel"),
+            ]
+            for q in rel_queries:
+                try:
+                    for row in s.run(q).data():
+                        src, tgt = row["src"], row["tgt"]
+                        if src in nodes_raw and tgt in nodes_raw:
+                            edges.append({"source": src, "target": tgt,
+                                          "label": row["rel"]})
+                except Exception:
+                    pass
+
+        drv.close()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Neo4j unavailable: {e}")
+
+    return {
+        "nodes": list(nodes_raw.values()),
+        "edges": edges,
+        "stats": {
+            "topics":    sum(1 for n in nodes_raw.values() if n["type"] == "Topic"),
+            "modules":   sum(1 for n in nodes_raw.values() if n["type"] == "Module"),
+            "concepts":  sum(1 for n in nodes_raw.values() if n["type"] == "Concept"),
+            "resources": sum(1 for n in nodes_raw.values() if n["type"] == "Resource"),
+            "edges":     len(edges),
+        },
+    }
+
+
 @app.get("/showDB")
 def show_db(limit: int = Query(20, description="Max rows to return", example=10)):
     """Return the history of all past searches stored in PostgreSQL."""
@@ -1840,12 +1943,20 @@ def _parse_json_array(raw: str) -> list | None:
 
 def _generate_diagnostic_questions(topic: str) -> list:
     """Generate MCQ questions to gauge the learner's prior knowledge level."""
-    prompt = f"""You are an expert educator. Generate 6 multiple-choice questions to assess prior knowledge of "{topic}".
+    prompt = f"""You are an expert educator. Generate exactly 6 multiple-choice questions to assess prior knowledge of "{topic}".
 
-2 basic (facts), 2 intermediate (concepts), 2 advanced (application).
+Order them from easiest to hardest:
+- Questions 1-2: basic (factual recall)
+- Questions 3-4: intermediate (conceptual understanding)
+- Questions 5-6: advanced (application / problem solving)
+
+Rules:
+- The "concept" field must be a SHORT TOPIC NAME (2-5 words) that the question tests, e.g. "supervised learning", "overfitting", "backpropagation".
+- Each question has options A, B, C, D only. Do NOT include "I don't know" in the options array.
+- The "answer" field is the correct letter (A, B, C, or D).
 
 Respond with ONLY a JSON array, no other text, no markdown:
-[{{"id":1,"level":"basic","question":"...?","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A","explanation":"..."}},...]
+[{{"id":1,"level":"basic","concept":"specific subtopic","question":"...?","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A","explanation":"..."}},...]
 
 Topic: {topic}"""
 
@@ -1860,46 +1971,52 @@ Topic: {topic}"""
         questions = [q for q in questions if isinstance(q, dict) and required.issubset(q)]
 
     if questions:
-        # Normalise: ensure id and level exist
-        levels = ["basic", "basic", "intermediate", "intermediate", "advanced", "advanced"]
+        # Normalise: ensure id, level, concept exist
+        levels   = ["basic", "basic", "intermediate", "intermediate", "advanced", "advanced"]
+        concepts = ["fundamentals", "core concepts", "key principles",
+                    "intermediate concepts", "advanced application", "expert knowledge"]
         for i, q in enumerate(questions):
             q.setdefault("id", i + 1)
             q.setdefault("level", levels[i] if i < len(levels) else "intermediate")
             q.setdefault("explanation", "")
+            # If concept is missing or is the raw topic string, assign a meaningful default
+            existing = q.get("concept", "").strip()
+            if not existing or existing.lower() == topic.lower():
+                q["concept"] = concepts[i] if i < len(concepts) else "general knowledge"
         return questions
 
     # ── Hardcoded fallback so the endpoint never 500s ─────────────────────────
     print(f"[assess] LLM parse failed — using fallback questions for '{topic}'")
     return [
-        {"id": 1, "level": "basic",
+        {"id": 1, "level": "basic", "concept": "fundamentals",
          "question": f"Which of the following best describes {topic}?",
          "options": ["A. A programming language", "B. A field of study or practice",
-                     "C. A physical device",    "D. A mathematical theorem"],
+                     "C. A physical device",       "D. A mathematical theorem"],
          "answer": "B", "explanation": "This is a general orientation question."},
-        {"id": 2, "level": "basic",
-         "question": f"Have you studied {topic} before?",
-         "options": ["A. Never", "B. A little (self-study)",
-                     "C. Formally (course/book)", "D. I use it professionally"],
-         "answer": "A", "explanation": "Self-reported experience check."},
-        {"id": 3, "level": "intermediate",
-         "question": f"What is a key challenge in {topic}?",
+        {"id": 2, "level": "basic", "concept": "core definitions",
+         "question": f"What is the primary goal of {topic}?",
+         "options": ["A. To memorise facts",       "B. To solve problems systematically",
+                     "C. To build physical tools",  "D. To write essays"],
+         "answer": "B", "explanation": "Most fields aim to solve problems."},
+        {"id": 3, "level": "intermediate", "concept": "key challenges",
+         "question": f"What is a key challenge when working with {topic}?",
          "options": ["A. Lack of data",        "B. Complexity and abstraction",
                      "C. Hardware limitations", "D. Language barriers"],
          "answer": "B", "explanation": "Most fields involve managing complexity."},
-        {"id": 4, "level": "intermediate",
-         "question": f"Which skill is most useful when learning {topic}?",
+        {"id": 4, "level": "intermediate", "concept": "core concepts",
+         "question": f"Which skill is most important for mastering {topic}?",
          "options": ["A. Memorisation",   "B. Critical thinking",
                      "C. Speed reading",  "D. Drawing"],
          "answer": "B", "explanation": "Critical thinking aids deep understanding."},
-        {"id": 5, "level": "advanced",
+        {"id": 5, "level": "advanced", "concept": "real-world application",
          "question": f"How would you apply {topic} to solve a real-world problem?",
-         "options": ["A. By reading a textbook",        "B. By following a fixed recipe",
+         "options": ["A. By reading a textbook",             "B. By following a fixed recipe",
                      "C. By adapting principles to context", "D. By avoiding uncertainty"],
          "answer": "C", "explanation": "Application requires contextual adaptation."},
-        {"id": 6, "level": "advanced",
+        {"id": 6, "level": "advanced", "concept": "expert knowledge",
          "question": f"What distinguishes an expert in {topic} from a beginner?",
-         "options": ["A. Knowing more vocabulary",   "B. Having more tools",
-                     "C. Deeper conceptual models",  "D. Working faster"],
+         "options": ["A. Knowing more vocabulary", "B. Having more tools",
+                     "C. Deeper conceptual models", "D. Working faster"],
          "answer": "C", "explanation": "Experts build richer mental models."},
     ]
 
@@ -1907,55 +2024,35 @@ Topic: {topic}"""
 def _evaluate_level(topic: str, questions: list, answers: list) -> dict:
     """
     Score the diagnostic answers and determine the learner's level.
+    'E' (I don't know) always counts as wrong — score 0 for that question.
     Returns {score, level, level_emoji, feedback}.
     """
-    qa_pairs = []
+    total   = len(questions)
+    correct = 0
     for i, q in enumerate(questions):
-        user_ans = answers[i].strip().upper() if i < len(answers) else "?"
-        correct  = q["answer"].strip().upper()
-        qa_pairs.append(
-            f"Q{i+1} [{q['level']}]: {q['question']}\n"
-            f"  Correct: {correct} | User: {user_ans} | {'✅' if user_ans == correct else '❌'}"
-        )
+        user_ans = answers[i].strip().upper() if i < len(answers) else "E"
+        # "E" = I don't know → always wrong
+        if user_ans == "E":
+            continue
+        if user_ans == q.get("answer", "").strip().upper():
+            correct += 1
 
-    prompt = f"""You assessed a student on "{topic}". Here are their results:
+    score = round(correct / total * 100) if total else 0
 
-{chr(10).join(qa_pairs)}
-
-Based on these results, determine:
-1. Overall score (0-100)
-2. Level: "beginner" if score < 40, "intermediate" if 40-70, "advanced" if > 70
-3. Short personalised feedback (2 sentences)
-
-Return ONLY valid JSON:
-{{
-  "score": 65,
-  "level": "intermediate",
-  "level_emoji": "🟡",
-  "feedback": "You have a solid grasp of the basics but some advanced concepts need work."
-}}"""
-
-    raw   = llm_str(prompt)
-    match = re.search(r"\{[\s\S]*\}", raw)
-    if match:
-        try:
-            return json.loads(match.group())
-        except json.JSONDecodeError:
-            pass
-    # Fallback: compute score manually
-    correct = sum(
-        1 for i, q in enumerate(questions)
-        if i < len(answers) and answers[i].strip().upper() == q["answer"].strip().upper()
-    )
-    score = round(correct / len(questions) * 100) if questions else 0
     if score < 40:
-        level, emoji = "beginner", "🟢"
+        level, emoji = "beginner",     "🟢"
+        feedback = (f"You answered {correct}/{total} correctly. "
+                    f"No worries — we'll build your {topic} skills from the ground up!")
     elif score <= 70:
         level, emoji = "intermediate", "🟡"
+        feedback = (f"You answered {correct}/{total} correctly. "
+                    f"You have a solid grasp of the basics but some advanced {topic} concepts need work.")
     else:
-        level, emoji = "advanced", "🔴"
-    return {"score": score, "level": level, "level_emoji": emoji,
-            "feedback": f"You answered {correct}/{len(questions)} correctly."}
+        level, emoji = "advanced",     "🔴"
+        feedback = (f"Excellent! You answered {correct}/{total} correctly. "
+                    f"You have strong {topic} knowledge — we'll focus on advanced topics.")
+
+    return {"score": score, "level": level, "level_emoji": emoji, "feedback": feedback}
 
 
 # ── Lesson helpers ─────────────────────────────────────────────────────────────
@@ -3276,6 +3373,188 @@ def verify_student_account(
             "message": "Account activated. You can now log in."}
 
 
+# ── GET /students/{student_id}/progress ──────────────────────────────────────
+
+@app.get(
+    "/students/{student_id}/progress",
+    summary="Full learning progress for a student",
+)
+def get_student_progress(student_id: int = Path(..., description="Student ID")):
+    """
+    Returns a complete progress report for a student:
+    - Profile (username, joined date)
+    - Assessments taken with scores and level
+    - Knowledge gaps (open and resolved)
+    - Topic mastery scores
+    - Learning progress per module (quiz scores, attempts, pass/fail)
+    """
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Student profile
+            cur.execute(
+                "SELECT id, username, email, created_at FROM students WHERE id = %s",
+                (student_id,),
+            )
+            student = cur.fetchone()
+            if not student:
+                raise HTTPException(status_code=404, detail=f"Student {student_id} not found.")
+            student = dict(student)
+            student["created_at"] = str(student["created_at"])
+
+            # Assessments
+            cur.execute(
+                """SELECT id, course_id, level, score, taken_at
+                   FROM assessments WHERE student_id = %s
+                   ORDER BY taken_at DESC""",
+                (student_id,),
+            )
+            assessments = []
+            for row in cur.fetchall():
+                row = dict(row)
+                row["taken_at"] = str(row["taken_at"])
+                # Fetch per-question answers
+                cur.execute(
+                    """SELECT question, concept, student_answer, correct_answer, is_correct
+                       FROM assessment_answers WHERE assessment_id = %s""",
+                    (row["id"],),
+                )
+                row["answers"] = [dict(a) for a in cur.fetchall()]
+                assessments.append(row)
+
+            # Knowledge gaps
+            cur.execute(
+                """SELECT id, course_id, topic_name, severity, source,
+                          identified_at, resolved_at
+                   FROM knowledge_gaps WHERE student_id = %s
+                   ORDER BY identified_at DESC""",
+                (student_id,),
+            )
+            gaps = []
+            for row in cur.fetchall():
+                row = dict(row)
+                row["identified_at"] = str(row["identified_at"]) if row["identified_at"] else None
+                row["resolved_at"]   = str(row["resolved_at"])   if row["resolved_at"]   else None
+                gaps.append(row)
+
+            # Topic mastery
+            cur.execute(
+                """SELECT topic_name, mastery_score, attempt_count, pass_count, last_updated
+                   FROM topic_mastery WHERE student_id = %s
+                   ORDER BY mastery_score DESC""",
+                (student_id,),
+            )
+            mastery = []
+            for row in cur.fetchall():
+                row = dict(row)
+                row["last_updated"] = str(row["last_updated"]) if row["last_updated"] else None
+                mastery.append(row)
+
+            # Module progress
+            cur.execute(
+                """SELECT lp.title, lp.score, lp.total, lp.passed,
+                          lp.attempt_number, lp.timestamp,
+                          rm.title AS module_title
+                   FROM learning_progress lp
+                   LEFT JOIN roadmap_modules rm ON rm.id = lp.module_id
+                   WHERE lp.student_id = %s
+                   ORDER BY lp.timestamp DESC""",
+                (student_id,),
+            )
+            progress = []
+            for row in cur.fetchall():
+                row = dict(row)
+                row["timestamp"] = str(row["timestamp"]) if row["timestamp"] else None
+                progress.append(row)
+
+    # Aggregate stats
+    scores = [a["score"] for a in assessments if a["score"] is not None]
+    open_gaps   = [g for g in gaps if g["resolved_at"] is None]
+    closed_gaps = [g for g in gaps if g["resolved_at"] is not None]
+
+    return {
+        "student":         student,
+        "stats": {
+            "assessments_taken": len(assessments),
+            "avg_score":         round(sum(scores) / len(scores), 1) if scores else 0,
+            "best_score":        max(scores) if scores else 0,
+            "open_gaps":         len(open_gaps),
+            "resolved_gaps":     len(closed_gaps),
+            "topics_mastered":   sum(1 for m in mastery if m["mastery_score"] >= 0.7),
+        },
+        "assessments":  assessments,
+        "gaps":         gaps,
+        "mastery":      mastery,
+        "progress":     progress,
+    }
+
+
+# ── GET /students/{student_id}/gaps ──────────────────────────────────────────
+
+@app.get(
+    "/students/{student_id}/gaps",
+    summary="Get all knowledge gaps for a student",
+)
+def get_student_gaps(
+    student_id: int = Path(..., description="Student ID"),
+    course_id:  Optional[int] = Query(None, description="Filter by course ID"),
+    resolved:   Optional[bool] = Query(None, description="true=resolved only, false=unresolved only, omit=all"),
+    limit:      int = Query(50, ge=1, le=200),
+):
+    """
+    Returns all knowledge gaps identified for a student across all quizzes.
+
+    - Filter by `course_id` to scope to a specific course.
+    - Filter by `resolved` to see open or closed gaps.
+    - Gaps are ordered by severity (high → medium → low) then most recent first.
+    """
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT id FROM students WHERE id = %s", (student_id,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail=f"Student {student_id} not found.")
+
+            conditions = ["student_id = %s"]
+            values: list = [student_id]
+
+            if course_id is not None:
+                conditions.append("course_id = %s")
+                values.append(course_id)
+
+            if resolved is True:
+                conditions.append("resolved_at IS NOT NULL")
+            elif resolved is False:
+                conditions.append("resolved_at IS NULL")
+
+            where = " AND ".join(conditions)
+            cur.execute(
+                f"""
+                SELECT id, course_id, topic_name, severity, source,
+                       identified_at, resolved_at
+                FROM knowledge_gaps
+                WHERE {where}
+                ORDER BY
+                    CASE severity WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+                    identified_at DESC
+                LIMIT %s
+                """,
+                values + [limit],
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+
+    for r in rows:
+        r["identified_at"] = str(r["identified_at"]) if r["identified_at"] else None
+        r["resolved_at"]   = str(r["resolved_at"])   if r["resolved_at"]   else None
+
+    unresolved = sum(1 for r in rows if r["resolved_at"] is None)
+    return {
+        "student_id":   student_id,
+        "total":        len(rows),
+        "unresolved":   unresolved,
+        "resolved":     len(rows) - unresolved,
+        "gaps":         rows,
+    }
+
+
 # ── POST /deep-search ─────────────────────────────────────────────────────────
 
 @app.post(
@@ -3469,14 +3748,21 @@ def find_gaps(req: FindGapsRequest):
     if not req.questions or not req.answers:
         raise HTTPException(status_code=422, detail="'questions' and 'answers' are required.")
 
+    # ── Clean topic (strip natural-language prefix) ───────────────────────────
+    clean_topic = _clean_topic(req.topic)
+
     # ── Score answers ─────────────────────────────────────────────────────────
     qa_pairs: list[dict] = []
     for i, q in enumerate(req.questions):
         user_ans    = req.answers[i].strip().upper() if i < len(req.answers) else "?"
         correct_ans = q.get("answer", "A").strip().upper()
+        # Use question's concept if present and not the raw topic; else use cleaned topic
+        q_concept = q.get("concept", "").strip()
+        if not q_concept or q_concept.lower() in (req.topic.lower(), clean_topic.lower()):
+            q_concept = clean_topic
         qa_pairs.append({
             "question":      q.get("question", ""),
-            "concept":       q.get("concept", req.topic),
+            "concept":       q_concept,
             "user_answer":   user_ans,
             "correct_answer": correct_ans,
             "is_correct":    int(user_ans == correct_ans),
@@ -3485,23 +3771,33 @@ def find_gaps(req: FindGapsRequest):
     correct_count = sum(p["is_correct"] for p in qa_pairs)
     score = round(correct_count / len(req.questions) * 100) if req.questions else 0
 
-    # ── LLM gap analysis ──────────────────────────────────────────────────────
-    qa_text = "\n".join(
-        f"Q{i+1} [concept: {p['concept']}]: {p['question']}\n"
-        f"  Student: {p['user_answer']}  Correct: {p['correct_answer']}  "
-        f"{'✅' if p['is_correct'] else '❌'}"
-        for i, p in enumerate(qa_pairs)
-    )
-    prompt = (
-        f'A student answered a quiz on "{req.topic}". Analyse and identify gaps:\n\n'
-        f'{qa_text}\n\n'
-        f'Return ONLY a JSON array of gaps (empty array if all correct):\n'
-        f'[{{"concept":"...","severity":"low|medium|high",'
-        f'"explanation":"why this is a gap — 1 sentence"}}]'
-    )
-    raw  = llm_str(prompt)
-    gaps = [g for g in (_parse_json_array(raw) or [])
-            if isinstance(g, dict) and "concept" in g]
+    # ── Build gaps directly from wrong answers (no LLM for concept names) ─────
+    wrong_pairs = [(i, p) for i, p in enumerate(qa_pairs) if not p["is_correct"]]
+
+    # Severity by question level: advanced→high, intermediate→medium, basic→low
+    _level_severity = {"advanced": "high", "intermediate": "medium", "basic": "low"}
+
+    seen_concepts: set[str] = set()
+    gaps: list[dict] = []
+    for i, p in wrong_pairs:
+        concept = p["concept"]
+        # Reject generic / question-word concepts
+        bad = {"which", "what", "how", "why", "when", "where", "who", "is", "are",
+               "the", "a", "an", clean_topic.lower(), req.topic.lower()}
+        if not concept or concept.lower() in bad or "?" in concept or len(concept) > 60:
+            # Derive from the original question's level
+            q_obj   = req.questions[i]
+            level   = q_obj.get("level", "intermediate")
+            concept = f"{clean_topic} — {level} concepts"
+        if concept not in seen_concepts:
+            seen_concepts.add(concept)
+            q_obj    = req.questions[i]
+            severity = _level_severity.get(q_obj.get("level", "intermediate"), "medium")
+            gaps.append({
+                "concept":     concept,
+                "severity":    severity,
+                "explanation": f"Incorrect answer on: {p['question'][:100]}",
+            })
 
     # ── Persist gaps to DB ────────────────────────────────────────────────────
     gap_ids: list[int] = []

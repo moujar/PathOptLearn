@@ -25,7 +25,7 @@ services:
       neo4j:
         condition: service_healthy
       ollama:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
   # ── PostgreSQL ────────────────────────────────────────────────────────────
@@ -73,9 +73,15 @@ services:
     image: ollama/ollama
     container_name: pathoptlearn_ollama
     ports:
-      - "11434:11434"
+      - "11435:11434"
     volumes:
       - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list > /dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
     restart: unless-stopped
 
   # ── Streamlit frontend ───────────────────────────────────────────────────
@@ -101,10 +107,13 @@ services:
     image: ollama/ollama
     container_name: pathoptlearn_ollama_init
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     entrypoint: >
       sh -c "
-        sleep 5 &&
+        until ollama list > /dev/null 2>&1; do
+          echo 'waiting for ollama...'; sleep 3;
+        done &&
         ollama pull llama3.2:1b
       "
     environment:

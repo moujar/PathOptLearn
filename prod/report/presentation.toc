@@ -1,0 +1,12 @@
+\babel@toc {english}{}\relax 
+\beamer@sectionintoc {1}{Motivation \& Problem Statement}{3}{0}{1}
+\beamer@sectionintoc {2}{System Overview}{4}{0}{2}
+\beamer@sectionintoc {3}{Architecture}{5}{0}{3}
+\beamer@sectionintoc {4}{Adaptive Learning Pipeline}{8}{0}{4}
+\beamer@sectionintoc {5}{Key Features}{14}{0}{5}
+\beamer@sectionintoc {6}{System Evolution: search\_wiseper $\to $ PathOptLearn}{15}{0}{6}
+\beamer@sectionintoc {7}{Advanced Retrieval: Vector DB \& Deep Learning on KG}{17}{0}{7}
+\beamer@sectionintoc {8}{API Reference}{20}{0}{8}
+\beamer@sectionintoc {9}{Evaluation}{21}{0}{9}
+\beamer@sectionintoc {10}{Discussion}{26}{0}{10}
+\beamer@sectionintoc {11}{Conclusion}{27}{0}{11}

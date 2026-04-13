@@ -10,6 +10,13 @@ import time
 
 import requests
 import streamlit as st
+try:
+    from streamlit_agraph import agraph, Node, Edge, Config
+    _AGRAPH_AVAILABLE = True
+except ImportError:
+    _AGRAPH_AVAILABLE = False
+    # Stubs so the linter doesn't complain — never called at runtime
+    agraph = Node = Edge = Config = None  # type: ignore
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -140,6 +147,15 @@ def _sidebar():
                     f"**Level:** {st.session_state['level_emoji']} "
                     f"{st.session_state['level'].capitalize()}"
                 )
+
+        st.divider()
+        if st.session_state.get("student_id"):
+            if st.button("📊 My Progress", use_container_width=True):
+                st.session_state["_progress_prev"] = st.session_state["page"]
+                go("progress")
+        if st.button("🕸️ Knowledge Graph", use_container_width=True):
+            st.session_state["_graph_prev"] = st.session_state["page"]
+            go("graph")
 
 
 def _step_done(key: str) -> bool:
@@ -285,10 +301,10 @@ def page_searching():
 
     result = None
     with st.spinner("Running deep search pipeline…"):
-        result = api_post("/deep-search", json={
-            "topic":      topic,
-            "student_id": st.session_state["student_id"],
-        })
+        payload = {"topic": topic}
+        if st.session_state["student_id"]:
+            payload["student_id"] = st.session_state["student_id"]
+        result = api_post("/deep-search", json=payload)
 
     progress.progress(100, text="Done!")
 
@@ -357,14 +373,15 @@ def page_quiz():
 
             options = q.get("options") or []
             if options:
+                options_with_idk = options + ["E. I don't know"]
                 choice = st.radio(
                     label="Select answer",
-                    options=options,
+                    options=options_with_idk,
                     key=f"diag_q_{i}",
                     label_visibility="collapsed",
                 )
-                # Extract letter (A/B/C/D) from "A. ..." format
-                st.session_state["diag_answers"][i] = choice[0] if choice else "A"
+                # Extract letter (A/B/C/D/E) from "A. ..." format
+                st.session_state["diag_answers"][i] = choice[0] if choice else "E"
             else:
                 ans = st.text_input("Your answer", key=f"diag_short_{i}")
                 st.session_state["diag_answers"][i] = ans
@@ -391,12 +408,10 @@ def page_quiz():
             st.session_state["diag_feedback"] = result.get("feedback", "")
 
             # Also run /find-gaps to get structured gap list
-            gap_result = api_post("/find-gaps", json={
-                "topic":      topic,
-                "questions":  questions,
-                "answers":    answers,
-                "student_id": st.session_state["student_id"],
-            })
+            gap_payload = {"topic": topic, "questions": questions, "answers": answers}
+            if st.session_state["student_id"]:
+                gap_payload["student_id"] = st.session_state["student_id"]
+            gap_result = api_post("/find-gaps", json=gap_payload)
             if gap_result:
                 st.session_state["gaps"] = [
                     g["concept"] for g in gap_result.get("gaps", [])
@@ -438,12 +453,10 @@ def page_gaps():
 
         st.subheader("Recommended Resources for Your Gaps")
         with st.spinner("Finding best resources for your gaps…"):
-            recs = api_get(
-                "/recommender",
-                gaps=",".join(gaps[:4]),
-                student_id=st.session_state["student_id"] or "",
-                limit=3,
-            )
+            rec_params = {"gaps": ",".join(gaps[:4]), "limit": 3}
+            if st.session_state["student_id"]:
+                rec_params["student_id"] = st.session_state["student_id"]
+            recs = api_get("/recommender", **rec_params)
         if recs:
             st.session_state["gap_resources"] = recs.get("results", {})
             for gap_name, resources in recs.get("results", {}).items():
@@ -478,6 +491,9 @@ def page_roadmap():
             st.error("Could not generate roadmap.")
             return
         st.session_state["roadmap"] = data
+        # Overwrite topic with the cleaned version returned by the backend
+        if data.get("topic"):
+            st.session_state["topic"] = data["topic"]
 
         # Start a learning session
         if st.session_state["student_id"]:
@@ -541,21 +557,20 @@ def page_roadmap():
 # ── Page: lesson ──────────────────────────────────────────────────────────────
 
 def page_lesson():
-    topic      = st.session_state["topic"]
     module_uid = st.session_state["module_uid"]
     module_num = module_uid.split("::")[-1] if "::" in module_uid else "1"
+    # Use the topic embedded in module_uid (always the cleaned version)
+    topic      = module_uid.rsplit("::", 1)[0] if "::" in module_uid else st.session_state["topic"]
     session_id = st.session_state.get("session_id")
 
     # ── Subpage: show lesson content ──────────────────────────────────────────
     if not st.session_state["lesson_content"]:
         st.title(f"Loading Module {module_num}… 📖")
         with st.spinner("Generating lesson content (deep search + AI synthesis)…"):
-            data = api_get(
-                "/lesson",
-                topic=topic,
-                module_id=int(module_num),
-                session_id=session_id or "",
-            )
+            params = {"topic": topic, "module_id": int(module_num)}
+            if session_id:
+                params["session_id"] = session_id
+            data = api_get("/lesson", **params)
         if not data:
             st.error("Could not load lesson.")
             return
@@ -595,15 +610,21 @@ def page_lesson():
         if recs:
             st.subheader("Recommended for this module")
             for r in recs:
+                if isinstance(r, str):
+                    st.markdown(f"- 🔗 {r}")
+                    continue
                 icon = "▶️" if r.get("type") == "video" else "🔗"
                 st.markdown(
-                    f"- {icon} [{r.get('title', r.get('url'))}]({r.get('url')}) "
+                    f"- {icon} [{r.get('title', r.get('url', r))}]({r.get('url', '#')}) "
                     f"— *{r.get('reason', '')}*"
                 )
         if sources:
             st.subheader("All sources")
             for s in sources[:8]:
-                st.markdown(f"- [{s.get('title', s['url'])}]({s['url']})")
+                if isinstance(s, str):
+                    st.markdown(f"- {s}")
+                    continue
+                st.markdown(f"- [{s.get('title', s.get('url', s))}]({s.get('url', '#')})")
                 if s.get("snippet"):
                     st.caption(s["snippet"][:150])
 
@@ -611,6 +632,9 @@ def page_lesson():
         if videos:
             cols = st.columns(2)
             for i, v in enumerate(videos[:6]):
+                if isinstance(v, str):
+                    st.markdown(f"- ▶️ {v}")
+                    continue
                 with cols[i % 2]:
                     with st.container(border=True):
                         vid_id = v.get("id") or v.get("video_id", "")
@@ -691,12 +715,10 @@ def page_quiz_module():
 
         # Score via /find-gaps (it returns score + gaps)
         topic  = st.session_state["topic"]
-        result = api_post("/find-gaps", json={
-            "topic":      title,
-            "questions":  questions,
-            "answers":    answers,
-            "student_id": st.session_state["student_id"],
-        })
+        gap_payload2 = {"topic": title, "questions": questions, "answers": answers}
+        if st.session_state["student_id"]:
+            gap_payload2["student_id"] = st.session_state["student_id"]
+        result = api_post("/find-gaps", json=gap_payload2)
 
         if result:
             score = float(result.get("score", 0))
@@ -775,12 +797,10 @@ def page_quiz_result():
 
             st.subheader("Recommended resources")
             with st.spinner("Finding resources for your gaps…"):
-                recs = api_get(
-                    "/recommender",
-                    gaps=",".join(gaps[:4]),
-                    student_id=st.session_state["student_id"] or "",
-                    limit=3,
-                )
+                rec_params = {"gaps": ",".join(gaps[:4]), "limit": 3}
+                if st.session_state["student_id"]:
+                    rec_params["student_id"] = st.session_state["student_id"]
+                recs = api_get("/recommender", **rec_params)
             if recs:
                 for gap_name, resources in recs.get("results", {}).items():
                     st.markdown(f"**{gap_name}**")
@@ -851,6 +871,253 @@ def page_complete():
                             st.metric("Avg Score", f"{avg:.0f}%" if avg else "—")
 
 
+# ── Page: progress ───────────────────────────────────────────────────────────
+
+def page_progress():
+    student_id = st.session_state.get("student_id")
+    if not student_id:
+        st.warning("You must be logged in to view your progress.")
+        if st.button("Go to Login"):
+            go("auth")
+        return
+
+    st.title(f"My Learning Progress 📊")
+    st.markdown(f"Logged in as **{st.session_state['student_name']}**")
+    st.divider()
+
+    with st.spinner("Loading your progress…"):
+        data = api_get(f"/students/{student_id}/progress")
+    if not data:
+        st.error("Could not load progress data.")
+        return
+
+    stats   = data.get("stats", {})
+    assessments = data.get("assessments", [])
+    gaps    = data.get("gaps", [])
+    mastery = data.get("mastery", [])
+    progress = data.get("progress", [])
+
+    # ── Summary metrics ───────────────────────────────────────────────────────
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Quizzes Taken",    stats.get("assessments_taken", 0))
+    c2.metric("Avg Score",        f"{stats.get('avg_score', 0)}%")
+    c3.metric("Best Score",       f"{stats.get('best_score', 0)}%")
+    c4.metric("Open Gaps",        stats.get("open_gaps", 0))
+    c5.metric("Topics Mastered",  stats.get("topics_mastered", 0))
+    st.divider()
+
+    tab_assess, tab_gaps, tab_mastery, tab_modules = st.tabs([
+        "📝 Assessments", "🔍 Knowledge Gaps", "🏅 Topic Mastery", "📖 Module Progress"
+    ])
+
+    # ── Assessments tab ───────────────────────────────────────────────────────
+    with tab_assess:
+        if not assessments:
+            st.info("No assessments taken yet.")
+        for i, a in enumerate(assessments):
+            score = a.get("score", 0) or 0
+            level = a.get("level", "—")
+            emoji = {"beginner": "🟢", "intermediate": "🟡", "advanced": "🔴"}.get(level, "⚪")
+            date  = (a.get("taken_at") or "")[:10]
+            with st.expander(f"Assessment {i+1} — {emoji} {level.capitalize()}  |  Score: {score}%  |  {date}"):
+                st.progress(score / 100)
+                answers = a.get("answers", [])
+                if answers:
+                    correct = sum(1 for ans in answers if ans.get("is_correct"))
+                    st.caption(f"{correct}/{len(answers)} correct answers")
+                    for ans in answers:
+                        icon = "✅" if ans.get("is_correct") else "❌"
+                        st.markdown(
+                            f"{icon} **{ans.get('concept','—')}** — "
+                            f"*{ans.get('question','')[:80]}*  \n"
+                            f"Your answer: `{ans.get('student_answer','')}` | "
+                            f"Correct: `{ans.get('correct_answer','')}`"
+                        )
+
+    # ── Gaps tab ──────────────────────────────────────────────────────────────
+    with tab_gaps:
+        open_gaps   = [g for g in gaps if not g.get("resolved_at")]
+        closed_gaps = [g for g in gaps if g.get("resolved_at")]
+
+        if not gaps:
+            st.success("No knowledge gaps recorded yet!")
+        else:
+            if open_gaps:
+                st.subheader(f"Open Gaps ({len(open_gaps)})")
+                for g in open_gaps:
+                    sev = g.get("severity", "medium")
+                    sev_colour = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(sev, "⚪")
+                    st.markdown(
+                        f"{sev_colour} **{g['topic_name']}** — "
+                        f"severity: `{sev}` · identified: {(g.get('identified_at') or '')[:10]}"
+                    )
+            if closed_gaps:
+                st.subheader(f"Resolved Gaps ({len(closed_gaps)})")
+                for g in closed_gaps:
+                    st.markdown(
+                        f"✅ **{g['topic_name']}** — "
+                        f"resolved: {(g.get('resolved_at') or '')[:10]}"
+                    )
+
+    # ── Mastery tab ───────────────────────────────────────────────────────────
+    with tab_mastery:
+        if not mastery:
+            st.info("No topic mastery data yet. Complete some quizzes to build it up.")
+        else:
+            for m in mastery:
+                score = float(m.get("mastery_score", 0))
+                pct   = min(int(score * 100), 100)
+                label = "Mastered ✅" if score >= 0.7 else ("In progress 🔄" if score >= 0.4 else "Needs work ❌")
+                col_a, col_b = st.columns([3, 1])
+                with col_a:
+                    st.markdown(f"**{m['topic_name']}**")
+                    st.progress(pct / 100)
+                with col_b:
+                    st.metric("Score", f"{pct}%", label)
+                st.caption(
+                    f"Attempts: {m.get('attempt_count', 0)} | "
+                    f"Passed: {m.get('pass_count', 0)} | "
+                    f"Last updated: {(m.get('last_updated') or '')[:10]}"
+                )
+                st.divider()
+
+    # ── Module progress tab ───────────────────────────────────────────────────
+    with tab_modules:
+        if not progress:
+            st.info("No module progress recorded yet.")
+        else:
+            for p in progress:
+                score  = p.get("score", 0) or 0
+                total  = p.get("total", 1) or 1
+                passed = bool(p.get("passed"))
+                pct    = round(score / total * 100) if total else 0
+                title  = p.get("module_title") or p.get("title") or "Module"
+                date   = (p.get("timestamp") or "")[:10]
+                icon   = "✅" if passed else "❌"
+                with st.container(border=True):
+                    col_a, col_b, col_c = st.columns([3, 1, 1])
+                    with col_a:
+                        st.markdown(f"{icon} **{title}**")
+                        st.caption(f"Date: {date} | Attempt: {p.get('attempt_number', 1)}")
+                    with col_b:
+                        st.metric("Score", f"{pct}%")
+                    with col_c:
+                        st.metric("Result", "Pass" if passed else "Fail")
+
+    st.divider()
+    if st.button("← Back", use_container_width=False):
+        go(st.session_state.get("_progress_prev", "topic"))
+
+
+# ── Page: knowledge graph ────────────────────────────────────────────────────
+
+def page_graph():
+    st.title("Knowledge Graph 🕸️")
+    st.markdown("Visual map of all topics, modules, concepts and resources stored in Neo4j.")
+    st.divider()
+
+    # ── Controls ──────────────────────────────────────────────────────────────
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        filter_topic = st.text_input(
+            "Filter by topic (leave blank for all)",
+            placeholder="e.g. Machine Learning",
+        )
+    with col2:
+        limit = st.slider("Max nodes", 50, 500, 200, step=50)
+
+    if st.button("Load Graph", type="primary"):
+        params = {"limit": limit}
+        if filter_topic.strip():
+            params["topic"] = filter_topic.strip()
+        data = api_get("/graph", **params)
+        if data:
+            st.session_state["_graph_data"] = data
+
+    data = st.session_state.get("_graph_data")
+    if not data:
+        st.info("Click **Load Graph** to fetch the knowledge graph from Neo4j.")
+        return
+
+    stats = data.get("stats", {})
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Topics",    stats.get("topics", 0))
+    c2.metric("Modules",   stats.get("modules", 0))
+    c3.metric("Concepts",  stats.get("concepts", 0))
+    c4.metric("Resources", stats.get("resources", 0))
+    c5.metric("Edges",     stats.get("edges", 0))
+    st.divider()
+
+    nodes_raw = data.get("nodes", [])
+    edges_raw = data.get("edges", [])
+
+    if not nodes_raw:
+        st.warning("No nodes found in the graph yet. Run a deep search or build a roadmap first.")
+        return
+
+    # ── Colour map per node type ──────────────────────────────────────────────
+    colours = {
+        "Topic":    "#FF6B6B",
+        "Module":   "#4ECDC4",
+        "Concept":  "#FFE66D",
+        "Resource": "#A8E6CF",
+        "LevelGroup": "#C3B1E1",
+    }
+    sizes = {
+        "Topic": 30, "Module": 20, "Concept": 15,
+        "Resource": 12, "LevelGroup": 18,
+    }
+
+    if _AGRAPH_AVAILABLE:
+        ag_nodes = [
+            Node(  # type: ignore[operator]
+                id=n["id"],
+                label=n["label"][:25],
+                title=n.get("title", n["label"]),
+                color=colours.get(n["type"], "#CCCCCC"),
+                size=sizes.get(n["type"], 15),
+            )
+            for n in nodes_raw
+        ]
+        ag_edges = [
+            Edge(  # type: ignore[operator]
+                source=e["source"],
+                target=e["target"],
+                label=e.get("label", ""),
+            )
+            for e in edges_raw
+        ]
+        config = Config(  # type: ignore[operator]
+            width="100%",
+            height=620,
+            directed=True,
+            physics=True,
+            hierarchical=False,
+            nodeHighlightBehavior=True,
+            highlightColor="#F7A7A6",
+            collapsible=False,
+        )
+        agraph(nodes=ag_nodes, edges=ag_edges, config=config)  # type: ignore[operator]
+    else:
+        # Fallback: plain table view when agraph not installed
+        st.warning("streamlit-agraph not available — showing table view.")
+        tab_n, tab_e = st.tabs(["Nodes", "Edges"])
+        with tab_n:
+            for ntype in ["Topic", "Module", "Concept", "Resource"]:
+                subset = [n for n in nodes_raw if n["type"] == ntype]
+                if subset:
+                    st.subheader(f"{colours.get(ntype,'⚪')} {ntype}s ({len(subset)})")
+                    for n in subset:
+                        st.markdown(f"- **{n['label']}**")
+        with tab_e:
+            for e in edges_raw:
+                st.markdown(f"- `{e['source']}` —[{e.get('label','')}]→ `{e['target']}`")
+
+    st.divider()
+    if st.button("← Back", use_container_width=False):
+        go(st.session_state.get("_graph_prev", "topic"))
+
+
 # ── Router ────────────────────────────────────────────────────────────────────
 
 _sidebar()
@@ -867,5 +1134,7 @@ elif page == "lesson":      page_lesson()
 elif page == "quiz_module": page_quiz_module()
 elif page == "quiz_result": page_quiz_result()
 elif page == "complete":    page_complete()
+elif page == "graph":       page_graph()
+elif page == "progress":    page_progress()
 else:
     go("auth")
