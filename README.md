@@ -54,7 +54,7 @@ Topic Input
 | Streamlit frontend| Web UI                                      | 8501         |
 | PostgreSQL        | Users, sessions, assessments, gaps          | 5432         |
 | Neo4j             | Knowledge graph (topics, modules, concepts) | 7474 / 7687  |
-| Ollama            | Local LLM inference (`llama3.2:1b`)         | 11434        |
+| Ollama            | Local LLM inference (`llama3.2:1b`, `deepseekV3.2 `, `mistral`)         | 11434        |
 
 ---
 
