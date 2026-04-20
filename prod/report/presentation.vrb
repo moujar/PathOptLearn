@@ -1,0 +1,32 @@
+\frametitle{Appendix: Deployment}
+\begin{lstlisting}[language=bash, caption={One-command deployment.}]
+cp .env.example .env
+docker compose up --build
+# Wait ~30s on first run (Ollama pulls llama3.2:1b)
+# Frontend : http://localhost:8501
+# API docs : http://localhost:8000/docs
+# Neo4j UI : http://localhost:7474
+\end{lstlisting}
+
+\vspace{0.4cm}
+\begin{columns}[T]
+  \column{0.48\textwidth}
+  \textbf{Hardware requirements:}
+  \begin{itemize}
+    \item GPU (recommended): NVIDIA RTX 3070+ (12 GB VRAM)
+    \item CPU-only: supported, $5$--$10\times$ slower
+    \item RAM: 16 GB min, 32 GB recommended
+    \item Disk: $\sim6$ GB (model) + $\sim500$ MB (images)
+  \end{itemize}
+
+  \column{0.48\textwidth}
+  \textbf{Services:}
+  \begin{itemize}
+    \item \texttt{api} — FastAPI + Uvicorn
+    \item \texttt{postgres} — PostgreSQL 16 Alpine
+    \item \texttt{neo4j} — Neo4j 5 Community
+    \item \texttt{ollama} — LLM inference server
+    \item \texttt{ollama-init} — model pull (exits)
+    \item \texttt{frontend} — Streamlit
+  \end{itemize}
+\end{columns}
